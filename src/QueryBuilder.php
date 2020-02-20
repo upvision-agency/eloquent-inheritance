@@ -27,13 +27,12 @@ class QueryBuilder extends BaseQueryBuilder {
 	public function model() {
 		if($this->model !== null)
 			return $this->model;
-		else {
-			$from = $this->from;
-			$class = InheritableModel::classForTableName($from);
-			$model = new $class;
-		   
-			return $model;
-		}
+
+		$from = $this->from;
+		$class = InheritableModel::classForTableName($from);
+		$model = new $class;
+	   
+		return $model;
 	}
 
 	public function prefixColumn($column, $join_if_necessary = false) {
