@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
+use Closure;
 use DateTime;
 use Exception;
 use RecursiveDirectoryIterator;
@@ -43,23 +44,18 @@ class InheritableModel extends BaseModel {
 	}
 
 	public function __set($key, $value) {
-		if ($key == 'base_id')
-			return (static::class == self::class) ?
-				$this->setAttribute('id', $value) :
-				$this->setAttribute($key, $value);
-		else if ($this->hasAttribute($key))
+		if ($key == 'base_id' && static::class == self::class)
+			return $this->setAttribute('id', $value);
+
+		if ($this->hasAttribute($key) || static::class == self::class)
 			return $this->setAttribute($key, $value);
-		else if (static::class == self::class)
-			return $this->setAttribute($key, $value);
-		else
-			return $this->parent_model()->$key = $value;
+
+		return $this->parent_model()->$key = $value;
 	}
 
 	public function tableForAttribute($attr) {
 		$model_class = $this->modelClassForAttribute($attr);
-		$result = $model_class::tableName();
-	  
-		return $result;
+		return $model_class::tableName();
 	}
 
 	public function modelClassForAttribute($attr) {
@@ -206,26 +202,22 @@ class InheritableModel extends BaseModel {
 	}
 
 	public function getRecursiveAttributes() {
-		$columns = $this->getRecursiveColumns();
-		$attributes = [];
-
-		foreach($columns as $column) {
+		return array_reduce($this->getRecursiveColumns(), function($attributes, $column) {
 			$value = $this->$column;
+			$attributes[$column] = ($value instanceof DateTime) ? (string)$value : $value;
 
-			if ($value instanceof DateTime)
-				$value = (string) $value;
-
-			$attributes[$column] = $value;
-		}
-
-		return $attributes;
+			return $attributes;
+		}, []);
 	}
 	
-	public function id_as($model_class_) {
+	public function id_as($requestedClass) {
 		$model = $this;
+		$modelClass = \get_class($model);
 
-		while(($model_class = \get_class($model)) !== $model_class_ && $model_class !== self::class)
+		while ($modelClass !== $requestedClass && $modelClass !== self::class) {
 			$model = $model->parent_model();
+			$modelClass = \get_class($model);
+		}
 
 		return $model->id;
 	}
@@ -270,10 +262,10 @@ class InheritableModel extends BaseModel {
 		$top_class = self::topClassWithBaseId($base_id);
 		$current_class = static::class;
 		
-		if ($current_class !== $top_class)
-			return ($top_class !== self::class) ?
-				$top_class::where('base_id', $base_id)->first() :
-				$top_class::where('id', $base_id)->first();
+		if ($current_class !== $top_class) {
+			$column = ($top_class !== self::class) ? 'base_id' : 'id';
+			return $top_class::where($column, $base_id)->first();
+		}
 		
 		return $this;
 	}
@@ -300,12 +292,10 @@ class InheritableModel extends BaseModel {
 		if (Cache::has($cache_key))
 			return Cache::get($cache_key);
 
-		$table_name = $this->table;
-		$table_columns = DB::connection()->getDoctrineSchemaManager()->listTableColumns($table_name);
-		$columns = [];
-
-		foreach($table_columns as $table_column)
-			$columns[] = $table_column->getName();
+		$tableColumns = DB::connection()->getDoctrineSchemaManager()->listTableColumns($this->table);
+		$columns = array_map(function($column) {
+			return $column->getName();
+		}, array_values($tableColumns));
 
 		Cache::forever($cache_key, $columns);
 
@@ -313,120 +303,36 @@ class InheritableModel extends BaseModel {
 	}
 
 	public function getRecursiveHidden() {
-		$cache_key = self::class . '__getRecursiveHidden__' . static::class;
-
-		if (Cache::has($cache_key))
-			return Cache::get($cache_key);
-
-		$hidden = $this->getHidden();
-		$model = $this;
-		$chain = [];
-
-		while($model !== null && \get_class($model) !== self::class) {
-			$chain[] = $model;
-			$model = $model->parent_model();
-		}
-
-		$chain = array_reverse($chain);
-
-		foreach($chain as $item)
-			$hidden = \array_merge($hidden, $item->getHidden());
-
-		$hidden = array_unique($hidden);
-		Cache::forever($cache_key, $hidden);
-
-		return $hidden;
+		return $this->getRecursiveValues('__getRecursiveHidden__', function($model) { return $model->getHidden(); });
 	}
 
 	public function getRecursiveFillable() {
-		$cache_key = self::class . '__getRecursiveFillable__' . static::class;
-
-		if (Cache::has($cache_key))
-			return Cache::get($cache_key);
-
-		$fillable = $this->getFillable();
-		$model = $this;
-		$chain = [];
-
-		while($model !== null && \get_class($model) !== self::class) {
-			$chain[] = $model;
-			$model = $model->parent_model();
-		}
-
-		$chain = array_reverse($chain);
-
-		foreach($chain as $item)
-			$fillable = \array_merge($fillable, $item->getFillable());
-
-		$fillable = array_unique($fillable);
-		Cache::forever($cache_key, $fillable);
-
-		return $fillable;
+		return $this->getRecursiveValues('__getRecursiveFillable__', function($model) { return $model->getFillable(); });
 	}
 
 	public function getRecursiveColumns() {
-		$cache_key = self::class . '__getRecursiveColumns__' . static::class;
-
-		if (Cache::has($cache_key))
-			return Cache::get($cache_key);
-
-		$columns = $this->getColumns();
-		$model = $this;
-		$chain = [];
-
-		while($model !== null && \get_class($model) !== self::class) {
-			$chain[] = $model;
-			$model = $model->parent_model();
-		}
-
-		$chain = array_reverse($chain);
-
-		foreach($chain as $item)
-			$columns = \array_merge($columns, $item->getColumns());
-
-		$columns = array_unique($columns);
-		Cache::forever($cache_key, $columns);
-
-		return $columns;
+		return $this->getRecursiveValues('__getRecursiveColumns__', function($model) { return $model->getColumns(); });
 	}
 
 	public function getRecursiveGuarded() {
-		$cache_key = self::class . '__getRecursiveGuarded__' . static::class;
-
-		if (Cache::has($cache_key))
-			return Cache::get($cache_key);
-
-		$guarded = $this->getGuarded();
-		$model = $this;
-		$chain = [];
-
-		while($model !== null && \get_class($model) !== self::class) {
-			$chain[] = $model;
-			$model = $model->parent_model();
-		}
-
-		$chain = array_reverse($chain);
-
-		foreach($chain as $item)
-			$guarded = \array_merge($guarded, $item->getGuarded());
-
-		$guarded = array_unique($guarded);
-		Cache::forever($cache_key, $guarded);
-
-		return $guarded;
+		return $this->getRecursiveValues('__getRecursiveGuarded__', function($model) { return $model->getGuarded(); });
 	}
 
 	public function getRecursiveDates() {
-		$cache_key = self::class . '__getRecursiveDates__' . static::class;
+		return $this->getRecursiveValues('__getRecursiveDates__', function($model) { return $model->getDates(); });
+	}
 
-		if (Cache::has($cache_key))
-			return Cache::get($cache_key);
+	protected function getRecursiveValues(string $cacheKey, Closure $getter) {
+		$cacheKey = self::class . $cacheKey . static::class;
 
-		$dates = $this->getDates();
+		if (Cache::has($cacheKey))
+			return Cache::get($cacheKey);
+
+		$values = $getter($this);
 		$model = $this;
 		$chain = [];
 
-		while($model !== null && \get_class($model) !== self::class) {
+		while ($model !== null && \get_class($model) !== self::class) {
 			$chain[] = $model;
 			$model = $model->parent_model();
 		}
@@ -434,25 +340,25 @@ class InheritableModel extends BaseModel {
 		$chain = array_reverse($chain);
 
 		foreach($chain as $item)
-			$dates = \array_merge($dates, $item->getDates());
+			$values = \array_merge($values, $getter($item));
 
-		$dates = array_unique($dates);
-		Cache::forever($cache_key, $dates);
+		$values = array_unique($values);
+		Cache::forever($cacheKey, $values);
 
-		return $dates;
+		return $values;
 	}
 
 	public function fill(array $attributes_) {
+		$recursive_columns = $this->getRecursiveColumns();
+		$columns = $this->getColumns();
 		$immediately_fillable = [];
 		$not_immediately_fillable = [];
-		$attributes = [];
-		$recursive_columns = $this->getRecursiveColumns();
+		
+		$attributes = array_filter($attributes_, function($key) use ($recursive_columns) {
+			return in_array($key, $recursive_columns) || \in_array($key, ['base_id', 'id', 'top_class']);
+		}, ARRAY_FILTER_USE_KEY);
+		
 
-		foreach($attributes_ as $key_ => $attribute_)
-			if (in_array($key_, $recursive_columns) || \in_array($key_, ['base_id', 'id', 'top_class']))
-				$attributes[$key_] = $attribute_;
-
-		$columns = $this->getColumns();
 
 		foreach($attributes as $key => $value) {
 			if (!\in_array($key, $columns) && !\in_array($key, ['base_id', 'id']))
@@ -464,7 +370,7 @@ class InheritableModel extends BaseModel {
 
 		// attributes given in case parent entities not created yet. this can occur when an model is
 		// created using the new keyword, given attributes pertaining to parents, but has not been saved.
-		if (\is_array($not_immediately_fillable) && \count($not_immediately_fillable) >= 1)
+		if (\count($not_immediately_fillable))
 			$this->parent_model($not_immediately_fillable);
 
 		$result = parent::fill($immediately_fillable);
@@ -480,10 +386,12 @@ class InheritableModel extends BaseModel {
 		$static_class = static::class;
 		$save_queue = [];
 		$model = $this;
+		$current_class = \get_class($model);
 
-		while(($current_class = \get_class($model)) !== self::class) {
+		while($current_class !== self::class) {
 			$save_queue[] = $model;
 			$model = $model->parent_model();
+			$current_class = \get_class($model);
 		}
 
 		$model->__set('top_class', $static_class);
@@ -556,7 +464,7 @@ class InheritableModel extends BaseModel {
 		if ($field_name !== null && !$this->hasAttribute($field_name)) {
 			$parent = $this->parent_model();
 
-			if ($parent === false || $field_name === null)
+			if ($parent === false)
 				throw new Exception('Could not find field ' . $field_name . ', reached the top of the parent tree for ' . static::class . '.');
 
 			$table_name = $parent->tableName($field_name);
@@ -643,11 +551,7 @@ class InheritableModel extends BaseModel {
 	}
 
 	public static function classForTableName($table_name) {
-		$table_classes = self::tableClasses();
-		
-		return isset($table_classes[$table_name]) ?
-			$table_classes[$table_name] :
-			null;
+		return self::tableClasses()[$table_name] ?? null;
 	}
 	
 	public static function select() {
@@ -678,11 +582,6 @@ class InheritableModel extends BaseModel {
 	public static function orderByDesc() {
 		$model = new static;
 		return $model->forwardCallTo($model->newQuery(), 'orderByDesc', func_get_args());
-	}
-
-	public static function orderByAsc() {
-		$model = new static;
-		return $model->forwardCallTo($model->newQuery(), 'orderByAsc', func_get_args());
 	}
 
 	public static function find() {
@@ -733,16 +632,6 @@ class InheritableModel extends BaseModel {
 	public static function withoutGlobalScopes() {
 		$model = new static;
 		return $model->forwardCallTo($model->newQuery(), 'withoutGlobalScopes', func_get_args());
-	}
-
-	public static function popular() {
-		$model = new static;
-		return $model->forwardCallTo($model->newQuery(), 'popular', func_get_args());
-	}
-
-	public static function ofType() {
-		$model = new static;
-		return $model->forwardCallTo($model->newQuery(), 'ofType', func_get_args());
 	}
 
 	public static function has() {
