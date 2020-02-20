@@ -1,116 +1,94 @@
-<?php namespace Cvsouth\EloquentInheritance;
+<?php
+
+namespace Cvsouth\EloquentInheritance;
 
 use Illuminate\Database\Eloquent\Model;
-
 use Illuminate\Database\Query\Builder as BaseQueryBuilder;
-
 use Illuminate\Pagination\Paginator;
 
-class QueryBuilder extends BaseQueryBuilder
-{
-    private $model = null;
+class QueryBuilder extends BaseQueryBuilder {
+	private $model = null;
 
-    public function orderBy($column, $direction = 'asc')
-    {
-        $column = $this->prefixColumn($column, true);
+	public function orderBy($column, $direction = 'asc') {
+		$column = $this->prefixColumn($column, true);
+		$query = parent::orderBy($column, $direction);
+		
+		return $query;
+	}
 
-        $query = parent::orderBy($column, $direction);
+	public function setModel(Model $model) {
+		$this->model = $model;
+	}
 
-        return $query;
-    }
-    public function setModel(Model $model)
-    {
-        $this->model = $model;
-    }
-    public function getModelClass()
-    {
-        return get_class($this->model());
-    }
-    public function model()
-    {
-        if($this->model !== null) return $this->model;
-        
-        else
-        {
-            $from = $this->from;
+	public function getModelClass() {
+		return get_class($this->model());
+	}
 
-            $class = InheritableModel::classForTableName($from);
-            
-            $model = new $class;
-           
-            return $model;
-        }
-    }
-    public function prefixColumn($column, $join_if_necessary = false)
-    {
-        // ignore wildcards
-        
-        if($column === "*" || (substr($column, -2) === ".*"))
-        
-            return $column;
+	public function model() {
+		if($this->model !== null)
+			return $this->model;
+		else {
+			$from = $this->from;
+			$class = InheritableModel::classForTableName($from);
+			$model = new $class;
+		   
+			return $model;
+		}
+	}
 
-        // already prefixed?
-       
-        if(strpos($column, ".") !== false)
-       
-            return $column;
+	public function prefixColumn($column, $join_if_necessary = false) {
+		// ignore wildcards
+		if($column === "*" || (substr($column, -2) === ".*"))
+			return $column;
 
-        $model = $this->model();
-      
-        $inheritable_model = new InheritableModel();
+		// already prefixed?
+		if(strpos($column, ".") !== false)
+			return $column;
 
-        if($column === $inheritable_model->getUpdatedAtColumn()
-       
-        || $column === "top_class")
+		$model = $this->model();
+		$inheritable_model = new InheritableModel();
 
-            $table = $inheritable_model->tableName();
+		if($column === $inheritable_model->getUpdatedAtColumn() || $column === "top_class")
+			$table = $inheritable_model->tableName();
+		else {
+			if(!in_array($column, $model->getRecursiveColumns()))
+				return $column;
 
-        else
-        {
-            if(!in_array($column, $model->getRecursiveColumns())) return $column;
+			$table = $model->tableForAttribute($column);
+		}
+		
+		// prefix
+		$column = $table . "." . $column;
 
-            $table = $model->tableForAttribute($column);
-        }
-        // prefix
-        
-        $column = $table . "." . $column;
+		if($table === $this->from)
+			return $column;
 
-        if($table === $this->from)
-     
-            return $column;
+		// add to join if necessary
+		if($join_if_necessary) {
+			$joins = $this->joins;
+	
+			if($joins) {
+				foreach($joins as $join)
+					if($join->table === $table)
+						return $column;
+			}
 
-        // add to join if necessary
-        
-        if($join_if_necessary)
-        {
-            $joins = $this->joins;
-    
-            if($joins)
-            {
-                foreach($joins as $join)
-           
-                    if($join->table === $table)
-           
-                        return $column;
-            }
-            $base_id_column = (($table === $inheritable_model->tableName()) ? ($table . ".id") : ($table . ".base_id"));
-            
-            $this->join($table, $base_id_column, "=", $this->from . ".base_id");
-        }
-        return $column;
-    }
-    public function select($columns = ['*'])
-    {
-        $this->columns = is_array($columns) ? $columns : func_get_args();
+			$base_id_column = (($table === $inheritable_model->tableName()) ? ($table . ".id") : ($table . ".base_id"));
+			$this->join($table, $base_id_column, "=", $this->from . ".base_id");
+		}
 
-        return $this;
-    }
-    public function addSelect($column)
-    {
-        $column = is_array($column) ? $column : func_get_args();
+		return $column;
+	}
 
-        $this->columns = array_merge((array) $this->columns, $column);
+	public function select($columns = ['*']) {
+		$this->columns = is_array($columns) ? $columns : func_get_args();
+		return $this;
+	}
 
-        return $this;
-    }
+	public function addSelect($column) {
+		$column = is_array($column) ? $column : func_get_args();
+		$this->columns = array_merge((array) $this->columns, $column);
+
+		return $this;
+	}
 }
